@@ -8,4 +8,5 @@ variable "primary_region" {
 variable "subnet_id" {
   description = "Subnet ID for Image Builder instances"
   type        = string
+  default     = "us-east-1a"
 }

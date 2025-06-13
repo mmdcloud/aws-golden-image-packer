@@ -51,25 +51,9 @@ resource "aws_security_group" "image_builder" {
 }
 
 # S3 Bucket for build artifacts
-resource "aws_s3_bucket" "ami_artifacts" {
-  bucket = "ami-artifacts-${data.aws_caller_identity.current.account_id}"
-  acl    = "private"
-
-  versioning {
-    enabled = true
-  }
-
-  server_side_encryption_configuration {
-    rule {
-      apply_server_side_encryption_by_default {
-        sse_algorithm = "AES256"
-      }
-    }
-  }
-
-  lifecycle {
-    prevent_destroy = true
-  }
+module "ami_artifacts" {
+  source      = "./modules/s3"
+  bucket_name = "ami-artifacts-${data.aws_caller_identity.current.account_id}"
 }
 
 # Image Builder Infrastructure
@@ -84,8 +68,8 @@ resource "aws_imagebuilder_infrastructure_configuration" "golden_ami" {
 
   logging {
     s3_logs {
-      s3_bucket_name = aws_s3_bucket.ami_artifacts.id
-      s3_key_prefix = "logs"
+      s3_bucket_name = module.ami_artifacts.id
+      s3_key_prefix  = "logs"
     }
   }
 }
@@ -163,7 +147,7 @@ resource "aws_imagebuilder_distribution_configuration" "multi_region" {
     region = var.primary_region
 
     ami_distribution_configuration {
-      name       = "golden-ami-{{ imagebuilder:buildDate }}"
+      name = "golden-ami-{{ imagebuilder:buildDate }}"
       ami_tags = {
         SourceAMI = "{{ imagebuilder:sourceImage }}"
         BuildDate = "{{ imagebuilder:buildDate }}"
@@ -175,7 +159,7 @@ resource "aws_imagebuilder_distribution_configuration" "multi_region" {
     region = "eu-west-1"
 
     ami_distribution_configuration {
-      name       = "golden-ami-{{ imagebuilder:buildDate }}"
+      name = "golden-ami-{{ imagebuilder:buildDate }}"
       ami_tags = {
         SourceAMI = "{{ imagebuilder:sourceImage }}"
         BuildDate = "{{ imagebuilder:buildDate }}"
@@ -187,7 +171,7 @@ resource "aws_imagebuilder_distribution_configuration" "multi_region" {
     region = "ap-southeast-1"
 
     ami_distribution_configuration {
-      name       = "golden-ami-{{ imagebuilder:buildDate }}"
+      name = "golden-ami-{{ imagebuilder:buildDate }}"
       ami_tags = {
         SourceAMI = "{{ imagebuilder:sourceImage }}"
         BuildDate = "{{ imagebuilder:buildDate }}"
@@ -205,38 +189,36 @@ resource "aws_imagebuilder_image_pipeline" "golden_ami" {
   distribution_configuration_arn   = aws_imagebuilder_distribution_configuration.multi_region.arn
 
   schedule {
-    schedule_expression = "cron(0 0 ? * SUN *)" # Weekly builds
+    schedule_expression                = "cron(0 0 ? * SUN *)" # Weekly builds
     pipeline_execution_start_condition = "EXPRESSION_MATCH_AND_DEPENDENCY_UPDATES_AVAILABLE"
   }
 
   enhanced_image_metadata_enabled = true
-  status                         = "ENABLED"
+  status                          = "ENABLED"
 
   image_tests_configuration {
     image_tests_enabled = true
-    timeout_minutes    = 60
+    timeout_minutes     = 60
   }
 }
 
 # EventBridge Rule for AMI Creation Notifications
-resource "aws_cloudwatch_event_rule" "ami_creation" {
-  name        = "ami-creation-event"
-  description = "Capture AMI creation events"
-
+module "eventbridge_rule" {
+  source        = "./modules/eventbridge"
+  rule_name     = "ami-creation-event"
+  description   = "Capture AMI creation events"
   event_pattern = <<EOF
 {
   "source": ["aws.imagebuilder"],
   "detail-type": ["Image Builder Image State Change"]
 }
-EOF
+EOF 
+  target_id     = "SendToSNS"
+  target_arn    = module.notification_topic.arn
 }
 
-resource "aws_cloudwatch_event_target" "notify_sns" {
-  rule      = aws_cloudwatch_event_rule.ami_creation.name
-  target_id = "SendToSNS"
-  arn       = aws_sns_topic.ami_notifications.arn
-}
-
-resource "aws_sns_topic" "ami_notifications" {
-  name = "ami-creation-notifications"
+# SNS Topic
+module "notification_topic" {
+  source     = "./modules/sns"
+  topic_name = "ami-creation-notifications"
 }
